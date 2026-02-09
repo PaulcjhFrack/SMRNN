@@ -1,1 +1,20 @@
-
+def prepare_sparse_fir_sparse_time(data_in, data_out, taps, time_steps):
+    data_in_np = data_in.numpy()
+    data_out_np = data_out.numpy()
+    max_tap = max(taps)
+    max_time = max(time_steps)
+    N = data_in_np.shape[0]
+    num_samples = N - max_tap - max_time
+    if num_samples <= 0:
+        raise ValueError("error.")
+    fir_features = np.zeros((N - max_tap, 2 * len(taps)), dtype=np.float32)
+    for idx, tap in enumerate(taps):
+        fir_features[:, 2 * idx] = data_in_np[tap:tap + (N - max_tap), 0]
+        fir_features[:, 2 * idx + 1] = data_in_np[tap:tap + (N - max_tap), 1]
+    X = torch.zeros(num_samples, len(time_steps), 2 * len(taps), dtype=torch.float32)
+    Y = torch.zeros(num_samples, 2, dtype=torch.float32)
+    for i in range(num_samples):
+        for j, t_off in enumerate(time_steps):
+            X[i, j, :] = torch.from_numpy(fir_features[i + t_off, :])
+        Y[i, :] = torch.from_numpy(data_out_np[i + max_tap + max_time, :])
+    return X, Y
