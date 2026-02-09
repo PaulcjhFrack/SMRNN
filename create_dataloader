@@ -1,1 +1,32 @@
+def create_dataloader(X_train, Y_train, batch_size):
+    dataset = TensorDataset(X_train, Y_train)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
+def NMSE(data_gt, data_pred):
+    error = torch.mean(torch.abs(data_gt - data_pred) ** 2)
+    signal_power = torch.mean(torch.abs(data_gt) ** 2)
+    nmse = 10 * torch.log10(error / signal_power)
+def load_data(filename):
+    X_I, X_Q = [], []
+    with open(filename, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split('\t')
+            if len(parts) < 2:
+                continue
+            try:
+                i_val = float(parts[0])
+                q_val = float(parts[1])
+            except:
+                continue
+            X_I.append(i_val)
+            X_Q.append(q_val)
+    X_I = np.array(X_I).reshape((-1, 1))
+    X_Q = np.array(X_Q).reshape((-1, 1))
+    max_val = np.max(np.sqrt(X_I ** 2 + X_Q ** 2))
+    X_I /= max_val
+    X_Q /= max_val
+    X = np.concatenate([X_I, X_Q], axis=1)
+    return torch.from_numpy(X).float()
