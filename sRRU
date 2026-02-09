@@ -4,29 +4,25 @@ class SRRUCell(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
 
-        # 线性变换层
+
         self.linear = nn.Linear(input_size + hidden_size, hidden_size)
         
-        # ReZero参数Z和遗忘参数C
+  
         self.Z = nn.Parameter(torch.zeros(hidden_size))
         self.C = nn.Parameter(torch.zeros(hidden_size))
-        
-        # 初始化权重
+
         nn.init.xavier_uniform_(self.linear.weight)
         nn.init.zeros_(self.linear.bias)
         
-        # 初始化C参数，使其sigmoid后的值在[0,1]之间均匀分布
         nn.init.uniform_(self.C, -2.0, 2.0)
 
     def forward(self, x, h_prev):
-        # 拼接输入和隐藏状态
+
         combined = torch.cat([x, h_prev], dim=1)
-        
-        # 计算候选状态
+ 
         v = torch.tanh(self.linear(combined))
-        
-        # 计算遗忘门和更新
-        f = torch.sigmoid(self.C)  # 遗忘门
-        h_current = f * h_prev + self.Z * v  # 更新隐藏状态
+
+        f = torch.sigmoid(self.C) 
+        h_current = f * h_prev + self.Z * v 
         
         return h_current
