@@ -1,1 +1,114 @@
+class SMRNN(nn.Module):
+    def __init__(self,
+                 sparse_taps,
+                 sparse_time_steps,
+                 hidden_size_iq=16,
+                 output_size=2,
+                 num_fir=3,
+                 envelope_order=3):
+        super(SMRNN, self).__init__()
+        self.sparse_taps = sparse_taps
+        self.sparse_time_steps = sparse_time_steps
+        self.memory_depth = len(sparse_taps)
+        self.hidden_size_iq = hidden_size_iq
+        self.output_size = output_size
+        self.num_fir = num_fir
+        self.envelope_order = envelope_order
+        self.input_dim = 2 * self.memory_depth
+        
+        self.fir_layer = nn.Linear(self.input_dim, 2 * self.num_fir, bias=False)
+        nn.init.xavier_uniform_(self.fir_layer.weight)
+
+        self.rnn_input_size = 2 * self.num_fir + 2 * self.num_fir
+     
+        self.rnn_cell = RRUCell(input_size=self.rnn_input_size, hidden_size=2*hidden_size_iq)
+        
+        self.h_init = nn.Parameter(torch.zeros(1, 2 * hidden_size_iq))
+        self.output_linear = nn.Linear(2 * hidden_size_iq, output_size)
+
+    def phase_normalization(self, x):
+        # x: (batch, 2)
+        I = x[:, 0]
+        Q = x[:, 1]
+        mag = torch.sqrt(I ** 2 + Q ** 2 )  
+        r_real = I / mag
+        r_imag = -Q / mag
+        return torch.stack([r_real, r_imag], dim=1), mag
+
+    def envelope_features(self, x):
+   
+        envelope_feats = []
+        mag_base = torch.sqrt(x[..., 0] ** 2 + x[..., 1] ** 2)
+        envelope_feats.append(torch.mean(mag_base, dim=1))
+        if self.envelope_order >= 2:
+            mag_sq = mag_base ** 2
+            envelope_feats.append(torch.mean(mag_sq, dim=1))
+        if self.envelope_order >= 3:
+            mag_cu = mag_base ** 3
+            envelope_feats.append(torch.mean(mag_cu, dim=1))
+        envelope_feats = torch.stack(envelope_feats, dim=1)
+        return envelope_feats
+
+    def forward(self, x):
+        batch_size, time_steps, _ = x.shape
+        device = x.device
+        h = self.h_init.expand(batch_size, -1).to(device)
+        r_prev = None
+        
+        for t in range(time_steps):
+            x_t = x[:, t, :].view(batch_size, self.memory_depth, 2)
+            r_curr, _ = self.phase_normalization(x_t[:, -1, :])
+            
+   
+            fir_out = self.fir_layer(x[:, t, :])
+            fir_iq = fir_out.view(batch_size, self.num_fir, 2)
+  
+            mag_fir_all = torch.sqrt(fir_iq[..., 0] ** 2 + fir_iq[..., 1] ** 2)
+            first_order = mag_fir_all                        # (batch, num_fir)
+            second_order = mag_fir_all ** 2                  # (batch, num_fir)
+            third_order = mag_fir_all ** 3                   # (batch, num_fir)
+            mag_fir_feats = torch.cat([first_order, third_order], dim=1)  # (batch, 3*num_fir)
+
+            r_t_fir, _ = self.phase_normalization(fir_iq[:, -1, :])
+            r_t_fir_exp = r_t_fir.unsqueeze(1).expand(-1, self.num_fir, -1)
+            r_curr_ = r_curr.unsqueeze(1).expand(-1, self.num_fir, -1)
+            fir_norm_complex = batch_complex_multiply(
+                r_curr_.contiguous().view(-1, 2),
+                fir_iq.contiguous().view(-1, 2)
+            )
+            fir_norm_complex = fir_norm_complex.view(batch_size, self.num_fir, 2)
+            fir_norm = fir_norm_complex.reshape(batch_size, -1)  # (batch, 2*num_fir)
+
+
+            rnn_input = torch.cat([fir_norm, mag_fir_feats], dim=1)  # (batch, 2*num_fir + 2*num_fir)
+
+            if t > 0:
+                h_I = h[:, :self.hidden_size_iq]
+                h_Q = h[:, self.hidden_size_iq:]
+                conj_r_prev = torch.stack([r_prev[:, 0], -r_prev[:, 1]], dim=1)
+                phase_diff = batch_complex_multiply(r_curr, conj_r_prev)
+                phase_diff_exp = phase_diff.unsqueeze(1).expand(-1, self.hidden_size_iq, -1)
+                h_complex = torch.stack([h_I, h_Q], dim=2).view(-1, 2)
+                phase_diff_flat = phase_diff_exp.contiguous().view(-1, 2)
+                h_norm_flat = batch_complex_multiply(phase_diff_flat, h_complex)
+                h_norm = h_norm_flat.view(batch_size, 2 * self.hidden_size_iq)
+            else:
+                h_norm = h
+
+       
+            h = self.rnn_cell(rnn_input, h_norm)
+            r_prev = r_curr
+
+
+        h_I = h[:, :self.hidden_size_iq]
+        h_Q = h[:, self.hidden_size_iq:]
+        conj_r_t = torch.stack([r_prev[:, 0], -r_prev[:, 1]], dim=1)
+        conj_r_t_exp = conj_r_t.unsqueeze(1).expand(-1, self.hidden_size_iq, -1)
+        h_complex = torch.stack([h_I, h_Q], dim=2).view(-1, 2)
+        conj_r_flat = conj_r_t_exp.contiguous().view(-1, 2)
+        h_denorm_flat = batch_complex_multiply(conj_r_flat, h_complex)
+        h_denorm_IQ = h_denorm_flat.view(batch_size, 2 * self.hidden_size_iq)
+
+        output = self.output_linear(h_denorm_IQ)
+        return output
 
